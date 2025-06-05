@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Назначение активности</title>
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Google Fonts (Roboto) -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap" rel="stylesheet">
+
+    <!-- Select2 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: #ffffff;
+            color: #000000;
+        }
+        .navbar {
+            background-color: #ffffff;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .navbar-brand {
+            font-weight: bold;
+            color: #000000;
+        }
+        .btn-primary {
+            background-color: #FFD700;
+            border-color: #FFD700;
+            color: #000000;
+        }
+        .btn-primary:hover {
+            background-color: #FFC300;
+            border-color: #FFC300;
+            color: #000000;
+        }
+        #loading-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            display: none;
+        }
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+            color: #FFD700;
+        }
+        .select2-container .select2-selection--multiple {
+            min-height: 38px;
+        }
+        .select2-container--default .select2-selection--multiple .select2-selection__choice {
+            background-color: #FFD700;
+            border: 1px solid #FFC300;
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar navbar-light">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <img src="https://www.tbank.ru/favicon.ico" alt="Т-Банк" width="30" height="30" class="d-inline-block align-text-top">
+                Т-Банк
+            </a>
+        </div>
+    </nav>
+
+    <!-- Оверлей во время загрузки/обработки -->
+    <div id="loading-overlay">
+        <div class="text-center">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Загрузка...</span>
+            </div>
+            <div class="mt-3">Обработка данных, пожалуйста, ждите...</div>
+        </div>
+    </div>
+
+    <div class="container py-5">
+        <h1 class="mb-4">📞 Автоматическое назначение активности</h1>
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert alert-warning">{{ msg }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form id="upload-form" method="post" enctype="multipart/form-data">
+            <!-- 1) Скилл-группы -->
+            <div class="mb-3">
+                <label class="form-label">Скилл-группы (выберите одну или несколько)</label>
+                <select
+                    class="form-select"
+                    name="skill_groups[]"
+                    id="skill-groups-select"
+                    multiple="multiple"
+                    required>
+                    {% if available_skills %}
+                        {% for skill in available_skills %}
+                            <option value="{{ skill }}">{{ skill }}</option>
+                        {% endfor %}
+                    {% endif %}
+                </select>
+                <div class="form-text">Удерживайте Ctrl (Cmd на Mac) для выбора нескольких групп</div>
+            </div>
+
+            <!-- 2) Файл активности -->
+            <div class="mb-3">
+                <label class="form-label">Активность (Omni-чат + Входящие звонки)</label>
+                <input
+                    class="form-control"
+                    type="file"
+                    name="activity"
+                    id="activity-file"
+                    accept=".xlsx"
+                    required>
+            </div>
+
+            <!-- 3) Стратегия выбора -->
+            <div class="mb-3">
+                <label class="form-label">Стратегия выбора</label>
+                <select class="form-select" id="selection-strategy" name="selection_strategy" required>
+                    <option value="by_delta" {% if last_settings.selection_strategy == 'by_delta' %}selected{% endif %}>Под дельту</option>
+                    <option value="mass" {% if last_settings.selection_strategy == 'mass' %}selected{% endif %}>Массовое</option>
+                </select>
+                <div class="form-text">«Под дельту» – распределение по слотам с дельтой. «Массовое» – назначаем всем по расписанию.</div>
+            </div>
+
+            <!-- 4) Массовая активность (появляется только при mass) -->
+            <div class="mb-3" id="mass-activity-group" style="display: none;">
+                <label class="form-label">Массовая активность</label>
+                <select class="form-select" name="mass_activity">
+                    <option value="Входящие звонки" {% if last_settings.mass_activity == 'Входящие звонки' %}selected{% endif %}>Входящие звонки</option>
+                    <option value="Чат" {% if last_settings.mass_activity == 'Чат' %}selected{% endif %}>Чат</option>
+                </select>
+            </div>
+
+            <!-- 5) Файл слотов (только при by_delta) -->
+            <div class="mb-3" id="slots-group">
+                <label class="form-label">Слоты с дельтой</label>
+                <input
+                    class="form-control"
+                    type="file"
+                    name="slots"
+                    id="slots-file"
+                    accept=".xlsx"
+                    required>
+                <div class="form-text">Формат: колонка «Дата», «Время» (HH:MM) и «Дельта».</div>
+            </div>
+
+            <!-- 6) Мин. длительность интервала (только при by_delta) -->
+            <div class="mb-3" id="min-interval-group">
+                <label class="form-label">Мин. длительность интервала (минуты)</label>
+                <input
+                    class="form-control"
+                    type="number"
+                    name="min_interval"
+                    id="min-interval"
+                    min="1"
+                    max="30"
+                    value="{{ last_settings.min_interval if last_settings.min_interval else 30 }}"
+                    required>
+                <div class="form-text">Например, 30 → значит сотрудник должен пересекаться хотя бы 30 минут.</div>
+            </div>
+
+            <!-- 7) Допускать частичное покрытие -->
+            <div class="mb-3 form-check">
+                <input
+                    type="checkbox"
+                    class="form-check-input"
+                    id="partial-coverage"
+                    name="partial_coverage"
+                    {% if last_settings.partial_coverage %}checked{% endif %}>
+                <label class="form-check-label" for="partial-coverage">Допускать частичное покрытие</label>
+                <div class="form-text">Если дельта не кратна 30, назначать остаток меньше 30 мин.</div>
+            </div>
+
+            <!-- Кнопка запуска -->
+            <button id="submit-btn" class="btn btn-primary" type="submit">Запустить</button>
+        </form>
+
+        {% if table %}
+            <hr class="my-4">
+            <h2 class="mt-4">Результаты</h2>
+            <div class="table-responsive">
+                {{ table|safe }}
+            </div>
+            <a href="{{ url_for('download') }}" class="btn btn-success mt-3">Скачать Excel</a>
+        {% endif %}
+    </div>
+
+    <!-- jQuery + Select2 + Bootstrap JS -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+    $(document).ready(function() {
+        // 1) Инициализация Select2
+        $('#skill-groups-select').select2({
+            placeholder: "Выберите скилл-группы",
+            allowClear: true,
+            width: '100%'
+        });
+
+        // 2) При загрузке страницы сразу отобразим/скроем поля в зависимости от last_settings
+        toggleStrategyFields();
+
+        // 3) Когда меняется стратегия выбора
+        $('#selection-strategy').on('change', function() {
+            toggleStrategyFields();
+        });
+
+        function toggleStrategyFields() {
+            const strat = $('#selection-strategy').val();
+
+            if (strat === 'by_delta') {
+                $('#mass-activity-group').hide();
+                $('#slots-group').show();
+                $('#min-interval-group').show();
+                $('#slots-file').prop('required', true);
+                $('#min-interval').prop('required', true);
+            } else {
+                // mass
+                $('#mass-activity-group').show();
+                $('#slots-group').hide();
+                $('#min-interval-group').hide();
+                $('#slots-file').prop('required', false);
+                $('#min-interval').prop('required', false);
+            }
+        }
+
+        // 4) При выборе файла активности — отправляем AJAX на /extract-skills
+        $('#activity-file').on('change', function() {
+            if (this.files.length > 0) {
+                const formData = new FormData();
+                formData.append('activity', this.files[0]);
+
+                $('#loading-overlay').show();
+
+                fetch('/extract-skills', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.skills && data.skills.length > 0) {
+                        // Очищаем и заново заполняем Select2
+                        $('#skill-groups-select').empty();
+                        data.skills.forEach(skill => {
+                            const newOption = new Option(skill, skill, false, false);
+                            $('#skill-groups-select').append(newOption);
+                        });
+                        $('#skill-groups-select').trigger('change');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Не удалось получить список скилл-групп.');
+                })
+                .finally(() => {
+                    $('#loading-overlay').hide();
+                });
+            }
+        });
+
+        // 5) При отправке формы показываем оверлей и дизейблим кнопку
+        $('#upload-form').on('submit', function() {
+            $('#loading-overlay').show();
+            $('#submit-btn').prop('disabled', true);
+        });
+    });
+    </script>
+</body>
+</html>
