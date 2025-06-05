@@ -1,0 +1,24 @@
+# Временные файлы
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Файлы среды
+.env
+.venv/
+venv/
+env/
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Файлы IDE
+.idea/
+.vscode/
+*.iml
+
+# Логи и данные
+*.log
+*.xlsx
+/temp/
