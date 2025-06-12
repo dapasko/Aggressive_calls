@@ -7,12 +7,28 @@ from openpyxl.utils import get_column_letter
 from config import TEMP_DIR
 
 
+def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Приводит DataFrame к безопасному виду для записи в Excel."""
+    for col in df.columns:
+        # Приводим типы к безопасным
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime('%d.%m.%Y %H:%M:%S').fillna('')
+        elif pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].fillna(0)
+        else:
+            df[col] = df[col].astype(str).replace('nan', '').fillna('')
+    return df
+
+
 def save_temp_file(df: pd.DataFrame) -> str:
     """Сохраняет DataFrame во временный файл и возвращает его ID."""
     temp_id = str(uuid.uuid4())
     temp_path = os.path.join(TEMP_DIR, f"{temp_id}.xlsx")
 
     try:
+        # Очищаем DataFrame перед записью
+        df = sanitize_dataframe(df.copy())
+
         with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='assign')
             ws = writer.sheets['assign']
@@ -42,12 +58,20 @@ def load_temp_file(temp_id: str) -> pd.DataFrame:
 
 def generate_excel_buffer(df: pd.DataFrame) -> io.BytesIO:
     """Генерирует Excel файл в памяти."""
+    # Очищаем DataFrame перед записью
+    df = sanitize_dataframe(df.copy())
+
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='assign')
-        ws = writer.sheets['assign']
-        for idx, col in enumerate(df.columns, start=1):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            ws.column_dimensions[get_column_letter(idx)].width = max_len
-    buf.seek(0)
-    return buf
+    try:
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='assign')
+            ws = writer.sheets['assign']
+            for idx, col in enumerate(df.columns, start=1):
+                max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                ws.column_dimensions[get_column_letter(idx)].width = max_len
+        buf.seek(0)
+        logging.info("Excel буфер успешно сформирован")
+        return buf
+    except Exception as e:
+        logging.error(f"Ошибка при формировании Excel-буфера: {e}")
+        raise

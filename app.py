@@ -1,179 +1,189 @@
-# app.py
-
-from flask import (
-    Flask, request, render_template, send_file,
-    redirect, url_for, flash, session, jsonify
-)
+from flask import Flask, request, render_template, send_file, redirect, url_for, flash, session, jsonify
 from processing import load_activity, load_slots, assign_calls, extract_unique_skills
 from utils import save_temp_file, load_temp_file, generate_excel_buffer
 from cleanup import start_cleanup_thread
-from config import SECRET_KEY
-
+from config import SECRET_KEY, TEMP_DIR
 import webbrowser
 import threading
-import pandas as pd
 import logging
+import pandas as pd
+import sys
+import os
 
-app = Flask(__name__)
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Инициализация Flask ---
+if getattr(sys, 'frozen', False):
+    import sys
+    if hasattr(sys, '_MEIPASS'):
+        template_folder = os.path.join(sys._MEIPASS, 'templates')
+        app = Flask(__name__, template_folder=template_folder)
+    else:
+        app = Flask(__name__)
+else:
+    app = Flask(__name__)
+
 app.secret_key = SECRET_KEY
+TEMPLATE_NAME = 'template.html'
 
+# --- Перед каждым запросом ---
 @app.before_request
 def before_request():
     session.permanent = False
+    logging.info("Начало запроса")
 
+# --- Главная страница ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    table = None
+    table_html = None
     available_skills = session.get('available_skills', [])
     last_settings = session.get('last_settings', {})
 
     if request.method == 'POST':
         try:
-            # 1) Считываем выбранные скилл-группы и файлы
+            # Получаем данные из формы
             skill_groups = request.form.getlist('skill_groups[]')
             activity_file = request.files.get('activity')
             slots_file = request.files.get('slots')
+            selection_strategy = request.form.get('selection_strategy', 'by_delta')
+            if selection_strategy not in ['by_delta', 'mass']:
+                selection_strategy = 'by_delta'
+            partial_coverage = 'partial_coverage' in request.form
+            mass_activity = request.form.get('mass_activity', 'Входящие звонки')
+            min_interval = int(request.form.get('min_interval', 30))
 
+            # Проверяем обязательные поля
             if not skill_groups:
-                flash("Выберите хотя бы одну скилл-группу")
-                return redirect(url_for('index'))
-            if not activity_file:
-                flash("Загрузите файл активности")
-                return redirect(url_for('index'))
+                flash('Выберите хотя бы одну скилл-группу')
+                return render_template(TEMPLATE_NAME,
+                                       table=table_html,
+                                       available_skills=available_skills,
+                                       last_settings=last_settings)
 
-            # 2) Читаем стратегию и доп. параметры
-            strategy = request.form.get('selection_strategy', 'by_delta')
-            partial_coverage = True if request.form.get('partial_coverage') == 'on' else False
+            if not activity_file or activity_file.filename == '':
+                flash('Загрузите файл активности')
+                return render_template(TEMPLATE_NAME,
+                                       table=table_html,
+                                       available_skills=available_skills,
+                                       last_settings=last_settings)
 
-            min_interval = None
-            mass_activity = None
+            if selection_strategy == 'by_delta' and (not slots_file or slots_file.filename == ''):
+                flash('Загрузите файл слотов')
+                return render_template(TEMPLATE_NAME,
+                                       table=table_html,
+                                       available_skills=available_skills,
+                                       last_settings=last_settings)
 
-            if strategy == 'by_delta':
-                # Мин. длительность интервала
-                try:
-                    min_interval = int(request.form.get('min_interval', 30))
-                except ValueError:
-                    flash("Некорректное значение «Мин. длительность интервала»")
-                    return redirect(url_for('index'))
-
-                if not slots_file:
-                    flash("Загрузите файл слотов для стратегии «Под дельту»")
-                    return redirect(url_for('index'))
-
-            else:  # strategy == 'mass'
-                # В mass не нужен min_interval, но нужна выбранная активность
-                mass_activity = request.form.get('mass_activity')
-                if mass_activity not in ['Входящие звонки', 'Чат']:
-                    flash("Выберите активность для массового назначения")
-                    return redirect(url_for('index'))
-
-            # 3) Сохраним настройки в сессии (для предзаполнения)
+            # Сохраняем настройки
             session['last_settings'] = {
-                'selection_strategy': strategy,
+                'skill_groups': skill_groups,
+                'selection_strategy': selection_strategy,
                 'partial_coverage': partial_coverage,
-                'min_interval': min_interval,
-                'mass_activity': mass_activity
+                'mass_activity': mass_activity,
+                'min_interval': min_interval
             }
+            session.modified = True
 
-            # 4) Читаем и валидируем файл активности
-            try:
-                df_act = load_activity(pd.read_excel(activity_file), skill_groups)
-            except Exception as e:
-                flash(f"Ошибка в файле активности: {e}")
-                return redirect(url_for('index'))
+            # Обрабатываем файл активности
+            activity_df = load_activity(activity_file, skill_groups)
 
-            df_slots = None
-            if strategy == 'by_delta':
-                # 5) Читаем и валидируем файл слотов
-                try:
-                    df_slots = load_slots(pd.read_excel(slots_file))
-                except Exception as e:
-                    flash(f"Ошибка в файле слотов: {e}")
-                    return redirect(url_for('index'))
+            # Обрабатываем файл слотов (если нужен)
+            slots_df = None
+            if selection_strategy == 'by_delta':
+                slots_df = load_slots(slots_file)
 
-            # 6) Запускаем логику распределения
-            df_result = assign_calls(
-                df_act=df_act,
-                df_slots=df_slots,
+            # Назначаем активность
+            result_df = assign_calls(
+                df_act=activity_df,
+                df_slots=slots_df,
                 min_interval=min_interval,
-                strategy=strategy,
+                strategy=selection_strategy,
                 partial_coverage=partial_coverage,
                 mass_activity=mass_activity
             )
 
-            if df_result.empty:
-                flash('Нет назначений с такими параметрами.')
-            else:
-                temp_id = save_temp_file(df_result)
-                session['temp_id'] = temp_id
-                table = df_result.to_html(
-                    index=False,
-                    classes='table table-bordered table-striped table-hover',
-                    border=0
-                )
+            # Сохраняем результат
+            if result_df.empty:
+                raise ValueError("Нет данных для сохранения — результат пуст")
+
+            temp_id = save_temp_file(result_df)
+            session['temp_id'] = temp_id
+            session.modified = True
+
+            # Генерируем предпросмотр
+            table_html = result_df.to_html(classes='table table-striped table-bordered', index=False)
+
+            # Перерисовываем страницу с результатом
+            return render_template(TEMPLATE_NAME,
+                                   table=table_html,
+                                   available_skills=available_skills,
+                                   last_settings=session.get('last_settings', {}))
 
         except Exception as e:
-            logging.exception("Ошибка обработки")
+            logging.exception("Ошибка обработки запроса")
             flash(f"Произошла ошибка: {e}")
+            return render_template(TEMPLATE_NAME,
+                                   table=table_html,
+                                   available_skills=available_skills,
+                                   last_settings=last_settings)
 
-    return render_template(
-        'template.html',
-        table=table,
-        available_skills=available_skills,
-        last_settings=last_settings
-    )
+    return render_template(TEMPLATE_NAME,
+                           table=table_html,
+                           available_skills=available_skills,
+                           last_settings=session.get('last_settings', {}))
 
+# --- Извлечение скилл-групп из файла ---
 @app.route('/extract-skills', methods=['POST'])
 def extract_skills():
-    # Этот эндпоинт принимает multipart: файл активности, возвращает JSON с уникальными «Скилл-группами»
     if 'activity' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
-    activity_file = request.files['activity']
-    if activity_file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+
+    file = request.files['activity']
+    if file.filename == '':
+        return jsonify({'error': 'Empty filename'}), 400
+
     try:
-        df_activity = pd.read_excel(activity_file)
-        skills = extract_unique_skills(df_activity)
+        df = pd.read_excel(file)
+        skills = extract_unique_skills(df)
         session['available_skills'] = skills
+        session.modified = True
         return jsonify({'skills': skills})
     except Exception as e:
-        logging.error(f"Ошибка извлечения скилл-групп: {e}")
+        logging.exception("Ошибка извлечения скилл-групп")
         return jsonify({'error': str(e)}), 500
 
+# --- Скачивание результата ---
 @app.route('/download')
 def download():
     temp_id = session.get('temp_id')
     if not temp_id:
-        flash("Нет данных для скачивания. Сначала выполните назначение.")
+        flash('Нет данных для скачивания. Сначала выполните назначение.')
         return redirect(url_for('index'))
+
     try:
         df = load_temp_file(temp_id)
         if df.empty:
-            flash("Нет данных для скачивания (пустой результат).")
-            return redirect(url_for('index'))
-    except FileNotFoundError:
-        flash("Файл не найден. Попробуйте снова.")
-        return redirect(url_for('index'))
-    except Exception as e:
-        flash(f"Ошибка при чтении файла: {e}")
-        return redirect(url_for('index'))
+            raise ValueError("Невозможно скачать файл — данные пусты")
 
-    try:
-        buf = generate_excel_buffer(df)
+        buffer = generate_excel_buffer(df)
         return send_file(
-            buf,
+            buffer,
             as_attachment=True,
-            download_name='assignments.xlsx',
+            download_name='result.xlsx',
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
     except Exception as e:
-        flash(f"Ошибка при подготовке файла: {e}")
+        logging.exception("Ошибка при скачивании")
+        flash(f"Ошибка при скачивании файла: {e}")
         return redirect(url_for('index'))
 
+# --- Открытие браузера ---
 def open_browser():
-    webbrowser.open_new("http://127.0.0.1:5000")
+    webbrowser.open_new('http://127.0.0.1:5000')
 
+# --- Запуск приложения ---
 if __name__ == '__main__':
     start_cleanup_thread()
     threading.Timer(1.0, open_browser).start()
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(debug=False, host='127.0.0.1', port=5000)

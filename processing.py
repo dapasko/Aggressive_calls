@@ -1,64 +1,89 @@
-# processing.py
-
 import pandas as pd
 import logging
-from typing import List
+from typing import List, Literal
+from werkzeug.datastructures import FileStorage
+from config import (
+    COL_SKILL_GROUP, COL_TIME, COL_ASSIGNED_ACTIVITY, COL_CATEGORY,
+    COL_ASSIGNED_MINUTES, COL_MAIN_ACTIVITY, COL_FUNC, COL_MASTER_ID,
+    COL_ACTIVITY_DATE, COL_START_TIME, COL_END_TIME, COL_START, COL_END,
+    COL_DELTA_MIN, COL_SLOT_START, COL_SLOT_END, COL_OVERLAP, COL_DATE_START,
+    COL_DATE_END, COL_SLOT_START_DT, COL_SLOT_END_DT, VAL_OMNI, VAL_CHAT,
+    VAL_CALLS, VAL_WORK_ON_LINE, VAL_UNIFORM, VAL_INTERVAL
+)
 
-def load_activity(df: pd.DataFrame, skill_groups: List[str]) -> pd.DataFrame:
+
+def load_activity(file: FileStorage, skill_groups: List[str]) -> pd.DataFrame:
     """Загружает и фильтрует активность по списку скилл-групп."""
     logging.info("Начало обработки активности...")
+
+    df = pd.read_excel(file)
     if df.empty:
         raise ValueError("Файл активности пуст.")
 
     required = {
-        'activity_date', 'start_time', 'end_time',
-        'main_act', 'Основной функционал',
-        'masterId', 'Скилл-группа'
+        COL_ACTIVITY_DATE, COL_START_TIME, COL_END_TIME,
+        COL_MAIN_ACTIVITY, COL_FUNC, COL_MASTER_ID, COL_SKILL_GROUP
     }
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"В активности отсутствуют: {missing}")
 
-    # Проверяем формат даты в колонке activity_date, но позже будем использовать start
     date_format_pattern = r'(\d{2}\.\d{2}\.\d{4})|(\d{4}-\d{2}-\d{2})'
-    if not df['activity_date'].astype(str).str.fullmatch(date_format_pattern).all():
+    if not df[COL_ACTIVITY_DATE].astype(str).str.fullmatch(date_format_pattern).all():
         raise ValueError("Дата должна быть в формате DD.MM.YYYY или YYYY-MM-DD")
 
     df = df.copy()
-    # Фильтруем по выбранным скилл-группам
-    df['skill_lower'] = df['Скилл-группа'].astype(str).str.strip().str.lower()
+    df['skill_lower'] = df[COL_SKILL_GROUP].astype(str).str.strip().str.lower()
     norm = [s.strip().lower() for s in skill_groups]
     df = df[df['skill_lower'].isin(norm)]
     if df.empty:
         raise ValueError("Нет данных для выбранных скилл-групп")
 
-    # Заполняем столбцы с началом/концом события
-    df['start'] = pd.to_datetime(df['activity_date'] + ' ' + df['start_time'], errors='coerce')
-    df['end']   = pd.to_datetime(df['activity_date'] + ' ' + df['end_time'], errors='coerce')
-    if df['start'].isna().all() or df['end'].isna().all():
+    df[COL_START] = pd.to_datetime(
+        df[COL_ACTIVITY_DATE].astype(str) + ' ' + df[COL_START_TIME].astype(str),
+        format='mixed',
+        dayfirst=True,
+        errors='coerce'
+    )
+    df[COL_END] = pd.to_datetime(
+        df[COL_ACTIVITY_DATE].astype(str) + ' ' + df[COL_END_TIME].astype(str),
+        format='mixed',
+        dayfirst=True,
+        errors='coerce'
+    )
+
+    if df[COL_START].isna().all() or df[COL_END].isna().all():
         raise ValueError("Не удалось распознать ни одну дату/время в активности")
 
-    df = df.dropna(subset=['start', 'end'])
-    df.loc[df['end'] <= df['start'], 'end'] += pd.Timedelta(days=1)
+    df = df.dropna(subset=[COL_START, COL_END])
+    df.loc[df[COL_END] <= df[COL_START], COL_END] += pd.Timedelta(days=1)
 
-    df['main_act_lower'] = df['main_act'].str.lower()
-    df['func_lower']     = df['Основной функционал'].str.lower()
+    df[COL_START] = df[COL_START].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df[COL_END] = df[COL_END].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df[COL_START] = pd.to_datetime(df[COL_START])
+    df[COL_END] = pd.to_datetime(df[COL_END])
+
+    df['main_act_lower'] = df[COL_MAIN_ACTIVITY].str.lower()
+    df['func_lower'] = df[COL_FUNC].str.lower()
 
     logging.info(f"Обработка активности завершена. Найдено: {len(df)} записей")
     return df
 
-def extract_unique_skills(df: pd.DataFrame) -> list:
-    """Извлекает уникальные скилл-группы из файла активности."""
-    if df.empty or 'Скилл-группа' not in df.columns:
-        return []
-    skills = df['Скилл-группа'].astype(str).unique()
-    skills = [s.strip() for s in skills if s.strip() and s.strip().lower() != 'nan']
-    skills = sorted(set(skills))
-    return skills
 
-def load_slots(df: pd.DataFrame) -> pd.DataFrame:
+def extract_unique_skills(df: pd.DataFrame) -> List[str]:
+    """Извлекает уникальные скилл-группы из файла активности."""
+    if df.empty or COL_SKILL_GROUP not in df.columns:
+        return []
+    skills = df[COL_SKILL_GROUP].astype(str).unique()
+    skills = [s.strip() for s in skills if s.strip() and s.strip().lower() != 'nan']
+    return sorted(set(skills))
+
+
+def load_slots(file: FileStorage) -> pd.DataFrame:
     """Загрузка и обработка слотов (30-минутные интервалы + дельта)."""
     logging.info("Начало обработки слотов...")
+
+    df = pd.read_excel(file)
     if df.empty:
         raise ValueError("Файл слотов пуст.")
 
@@ -67,7 +92,7 @@ def load_slots(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"В слотах отсутствуют: {missing}")
 
-    if not df['Время'].astype(str).str.match(r'^\d{2}:\d{2}$').all():
+    if not df[COL_TIME].astype(str).str.match(r'^\d{2}:\d{2}$').all():
         raise ValueError("Время должно быть в формате HH:MM")
 
     df = df.copy()
@@ -75,23 +100,39 @@ def load_slots(df: pd.DataFrame) -> pd.DataFrame:
     if df['Delta'].isna().any():
         raise ValueError("Не удалось преобразовать значения дельты в числа")
 
-    df['slot_start'] = pd.to_datetime(df['Дата'].astype(str) + ' ' + df['Время'].astype(str), errors='coerce')
-    if df['slot_start'].isna().all():
+    df[COL_SLOT_START] = pd.to_datetime(
+        df['Дата'].astype(str) + ' ' + df[COL_TIME].astype(str),
+        format='mixed',
+        dayfirst=True,
+        errors='coerce'
+    )
+
+    if df[COL_SLOT_START].isna().all():
         raise ValueError("Не удалось распознать ни одну дату/время в слотах")
 
-    df['slot_end'] = df['slot_start'] + pd.Timedelta(minutes=30)
-    df['delta_min'] = df['Delta'] * 60
+    df[COL_SLOT_END] = df[COL_SLOT_START] + pd.Timedelta(minutes=30)
+    df[COL_DELTA_MIN] = df['Delta'] * 60
+
+    df[COL_SLOT_START] = df[COL_SLOT_START].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df[COL_SLOT_END] = df[COL_SLOT_END].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df[COL_SLOT_START] = pd.to_datetime(df[COL_SLOT_START])
+    df[COL_SLOT_END] = pd.to_datetime(df[COL_SLOT_END])
 
     logging.info(f"Обработка слотов завершена. Найдено: {len(df)} слотов")
-    return df[['slot_start', 'slot_end', 'delta_min']]
+    return df[[COL_SLOT_START, COL_SLOT_END, COL_DELTA_MIN]]
+
+
+Strategy = Literal['by_delta', 'mass']
+ActivityType = Literal['Входящие звонки', 'Чат']
+
 
 def assign_calls(
     df_act: pd.DataFrame,
     df_slots: pd.DataFrame,
     min_interval: int,
-    strategy: str,
+    strategy: Strategy,
     partial_coverage: bool,
-    mass_activity: str
+    mass_activity: ActivityType
 ) -> pd.DataFrame:
     """
     Основная функция назначения.
@@ -108,136 +149,154 @@ def assign_calls(
     id_map = {}
     current_id = 1
 
-    # МАССОВОЕ НАЗНАЧЕНИЕ
+    # --- МАССОВОЕ НАЗНАЧЕНИЕ ---
     if strategy == 'mass':
-        df_mass = df_act[df_act['func_lower'].str.contains('omni', na=False)].copy()
-        if mass_activity == 'Входящие звонки':
-            src_mask = df_mass['main_act_lower'].str.contains('чат', na=False)
+        df_mass = df_act[df_act['func_lower'].str.contains(VAL_OMNI, case=False, na=False)].copy()
+        if df_mass.empty:
+            logging.warning("Нет записей с VAL_OMNI для массового назначения")
+            return pd.DataFrame()
+
+        if mass_activity == VAL_CALLS:
+            src_mask = df_mass['main_act_lower'].str.contains(VAL_CHAT, case=False, na=False)
         else:
-            src_mask = df_mass['main_act_lower'].str.contains('входящие звонки', na=False)
+            src_mask = df_mass['main_act_lower'].str.contains(VAL_CALLS, case=False, na=False)
 
         df_mass = df_mass[src_mask]
         if df_mass.empty:
-            return pd.DataFrame(columns=[
-                'task_id','masterId','date_start','date_end','date_choice',
-                'Категория активности','Назначенная активность',
-                'description','education_program','time_choice',
-                'slot_start','slot_end','назначено минут'
-            ])
+            logging.warning("Нет подходящих записей для массового назначения")
+            return pd.DataFrame()
 
         for _, row in df_mass.iterrows():
-            mid = row['masterId']
-            date_str = row['start'].strftime('%d.%m.%Y')
+            mid = row[COL_MASTER_ID]
+            date_str = row[COL_START].strftime('%Y-%m-%d')
             key = (mid, date_str)
             if key not in id_map:
                 id_map[key] = current_id
                 current_id += 1
-            duration_min = int((row['end'] - row['start']).total_seconds() / 60)
+
+            duration_min = int((row[COL_END] - row[COL_START]).total_seconds() / 60)
             assignments.append({
                 'task_id': id_map[key],
                 'masterId': mid,
-                'date_start': date_str,
-                'date_end': date_str,
-                'date_choice': 'Равномерно',
-                'Категория активности': 'Работа на линии',
-                'Назначенная активность': mass_activity,
-                'description': '',
-                'education_program': '',
-                'time_choice': 'Интервал',
-                'slot_start': row['start'].strftime('%H:%M:%S'),
-                'slot_end': row['end'].strftime('%H:%M:%S'),
-                'назначено минут': duration_min
+                COL_DATE_START: date_str,
+                COL_DATE_END: date_str,
+                'date_choice': VAL_UNIFORM,
+                COL_CATEGORY: VAL_WORK_ON_LINE,
+                COL_ASSIGNED_ACTIVITY: mass_activity,
+                'description': None,
+                'education_program': None,
+                'time_choice': VAL_INTERVAL,
+                'slot_start': row[COL_START].strftime('%H:%M:%S'),
+                'slot_end': row[COL_END].strftime('%H:%M:%S'),
+                COL_ASSIGNED_MINUTES: duration_min
             })
-        return pd.DataFrame(assignments)
+
+        df_result = pd.DataFrame(assignments)
+        if df_result.empty:
+            logging.warning("Массовое назначение: не создано ни одной записи")
+            return pd.DataFrame()
+
+        logging.info(f"Массовое назначение: создано {len(df_result)} записей")
+        return df_result
 
     # --- СТРАТЕГИЯ «ПОД ДЕЛЬТУ» ---
-    df_act = df_act[df_act['func_lower'].str.contains('omni', na=False)]
+    df_act = df_act[df_act['func_lower'].str.contains(VAL_OMNI, case=False, na=False)]
+    if df_act.empty:
+        logging.warning("Нет записей с VAL_OMNI для стратегии 'by_delta'")
+        return pd.DataFrame()
+
+    if df_slots.empty:
+        logging.warning("Нет слотов для стратегии 'by_delta'")
+        return pd.DataFrame()
+
     for _, slot in df_slots.iterrows():
-        s0, e0, delta = slot['slot_start'], slot['slot_end'], slot['delta_min']
-        slot_len = 30  # 30 минут
+        s0, e0, delta = slot[COL_SLOT_START], slot[COL_SLOT_END], slot[COL_DELTA_MIN]
 
         if delta < 0:
-            needed = abs(delta)
-            src_mask = df_act['main_act_lower'].str.contains('чат', na=False)
-            target_activity = 'Входящие звонки'
+            src_mask = df_act['main_act_lower'].str.contains(VAL_CHAT, case=False, na=False)
+            target_activity = VAL_CALLS
         else:
-            needed = delta
-            src_mask = df_act['main_act_lower'].str.contains('входящие звонки', na=False)
-            target_activity = 'Чат'
+            src_mask = df_act['main_act_lower'].str.contains(VAL_CALLS, case=False, na=False)
+            target_activity = VAL_CHAT
 
         df_tmp = df_act[src_mask].copy()
         if df_tmp.empty:
             continue
 
-        df_tmp['overlap'] = df_tmp.apply(
-            lambda r: max(0, (min(r['end'], e0) - max(r['start'], s0)).total_seconds() / 60),
+        df_tmp[COL_OVERLAP] = df_tmp.apply(
+            lambda r, s=s0, e=e0: max(0, (min(r[COL_END], e) - max(r[COL_START], s)).total_seconds() / 60),
             axis=1
         )
 
-        candidates = df_tmp[df_tmp['overlap'] >= min_interval].copy()
+        candidates = df_tmp[df_tmp[COL_OVERLAP] >= min_interval].copy()
         if candidates.empty:
             if partial_coverage:
-                candidates = df_tmp[df_tmp['overlap'] > 0].copy()
+                candidates = df_tmp[df_tmp[COL_OVERLAP] > 0].copy()
             else:
                 continue
 
-        unique_ids = list(candidates['masterId'].unique())
+        candidates = candidates.sort_values(by=COL_OVERLAP, ascending=False)
+        unique_ids = list(candidates[COL_MASTER_ID].unique())
 
-        full_slots = int(needed // slot_len)
-        remainder = int(needed % slot_len)
-        count_full = full_slots
-        count_partial = 1 if (partial_coverage and remainder > 0) else 0
-        total_needed_slots = count_full + count_partial
+        full_slots = int(abs(delta) // 30)
+        remainder = int(abs(delta) % 30)
+        total_needed_slots = full_slots + (1 if (partial_coverage and remainder > 0) else 0)
         assigned = 0
 
         for mid in unique_ids:
             if assigned >= total_needed_slots:
                 break
 
-            rec = candidates[candidates['masterId'] == mid].iloc[0]
-            date_str = rec['start'].strftime('%d.%m.%Y')
+            rec = candidates[candidates[COL_MASTER_ID] == mid].iloc[0]
+            date_str = rec[COL_START].strftime('%Y-%m-%d')
             key = (mid, date_str)
             if key not in id_map:
                 id_map[key] = current_id
                 current_id += 1
 
-            to_assign = slot_len
-            if (partial_coverage and assigned == count_full and remainder > 0):
+            to_assign = 30
+            if partial_coverage and assigned == full_slots and remainder > 0:
                 to_assign = remainder
 
             assignments.append({
                 'task_id': id_map[key],
                 'masterId': mid,
-                'date_start': date_str,
-                'date_end': date_str,
-                'date_choice': 'Равномерно',
-                'Категория активности': 'Работа на линии',
-                'Назначенная активность': target_activity,
+                COL_DATE_START: date_str,
+                COL_DATE_END: date_str,
+                'date_choice': VAL_UNIFORM,
+                COL_CATEGORY: VAL_WORK_ON_LINE,
+                COL_ASSIGNED_ACTIVITY: target_activity,
                 'description': '',
                 'education_program': '',
-                'time_choice': 'Интервал',
+                'time_choice': VAL_INTERVAL,
                 'slot_start': s0.strftime('%H:%M:%S'),
                 'slot_end': e0.strftime('%H:%M:%S'),
-                'назначено минут': to_assign
+                COL_ASSIGNED_MINUTES: to_assign
             })
 
             assigned += 1
 
     if not assignments:
-        return pd.DataFrame(columns=[
-            'task_id','masterId','date_start','date_end','date_choice',
-            'Категория активности','Назначенная активность',
-            'description','education_program','time_choice',
-            'slot_start','slot_end','назначено минут'
-        ])
+        logging.warning("Нет подходящих записей для назначения")
+        return pd.DataFrame()
 
     df_out = pd.DataFrame(assignments)
 
-    # Склеиваем подряд идущие интервалы
-    df_out['slot_start_dt'] = pd.to_datetime(df_out['date_start'] + ' ' + df_out['slot_start'])
-    df_out['slot_end_dt'] = pd.to_datetime(df_out['date_end'] + ' ' + df_out['slot_end'])
+    # --- СКЛЕИВАНИЕ ИНТЕРВАЛОВ ---
+    df_out[COL_SLOT_START_DT] = pd.to_datetime(
+        df_out[COL_DATE_START] + ' ' + df_out['slot_start'],
+        format='mixed',
+        dayfirst=True,
+        errors='coerce'
+    )
+    df_out[COL_SLOT_END_DT] = pd.to_datetime(
+        df_out[COL_DATE_END] + ' ' + df_out['slot_end'],
+        format='mixed',
+        dayfirst=True,
+        errors='coerce'
+    )
 
-    df_out = df_out.sort_values(by=['masterId', 'date_start', 'slot_start_dt'])
+    df_out = df_out.sort_values(by=['masterId', COL_DATE_START, COL_SLOT_START_DT])
 
     merged = []
     current = None
@@ -248,15 +307,14 @@ def assign_calls(
             continue
 
         same_person = row['masterId'] == current['masterId']
-        same_date = row['date_start'] == current['date_start']
-        same_activity = row['Назначенная активность'] == current['Назначенная активность']
-        continuous = row['slot_start_dt'] == current['slot_end_dt']
+        same_date = row[COL_DATE_START] == current[COL_DATE_START]
+        same_activity = row[COL_ASSIGNED_ACTIVITY] == current[COL_ASSIGNED_ACTIVITY]
+        continuous = row[COL_SLOT_START_DT] == current[COL_SLOT_END_DT]
 
         if same_person and same_date and same_activity and continuous:
-            # Расширяем текущий интервал
             current['slot_end'] = row['slot_end']
-            current['slot_end_dt'] = row['slot_end_dt']
-            current['назначено минут'] += row['назначено минут']
+            current[COL_SLOT_END_DT] = row[COL_SLOT_END_DT]
+            current[COL_ASSIGNED_MINUTES] += row[COL_ASSIGNED_MINUTES]
         else:
             merged.append(current)
             current = row
@@ -266,11 +324,16 @@ def assign_calls(
 
     df_merged = pd.DataFrame(merged)
 
-    return df_merged[[
-        'task_id','masterId','date_start','date_end','date_choice',
-        'Категория активности','Назначенная активность',
-        'description','education_program','time_choice',
-        'slot_start','slot_end','назначено минут'
-    ]]
+    # --- ФИНАЛЬНАЯ ОЧИСТКА ФОРМАТА ---
+    df_merged[COL_DATE_START] = pd.to_datetime(df_merged[COL_DATE_START]).dt.strftime('%Y-%m-%d')
+    df_merged[COL_DATE_END] = pd.to_datetime(df_merged[COL_DATE_END]).dt.strftime('%Y-%m-%d')
+    df_merged['slot_start'] = df_merged['slot_start'].str.split('.').str[0]
+    df_merged['slot_end'] = df_merged['slot_end'].str.split('.').str[0]
 
-    return pd.DataFrame(assignments)
+    logging.info(f"Финальное назначение: {len(df_merged)} записей")
+    return df_merged[[
+        'task_id', 'masterId', COL_DATE_START, COL_DATE_END, 'date_choice',
+        COL_CATEGORY, COL_ASSIGNED_ACTIVITY,
+        'description', 'education_program', 'time_choice',
+        'slot_start', 'slot_end', COL_ASSIGNED_MINUTES
+    ]]
