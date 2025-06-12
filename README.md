@@ -2,7 +2,6 @@
 
 > 🎯 **Автоматизированное распределение активности сотрудникам на основе данных из Excel**
 
-[![License](https://img.shields.io/github/license/tbank/timeflow)](https://github.com/tbank/timeflow/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-blue)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-2.3+-green)](https://flask.palletsprojects.com/)
 [![Pandas](https://img.shields.io/badge/Pandas-2.0+-orange)](https://pandas.pydata.org/)
