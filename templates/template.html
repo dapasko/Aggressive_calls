@@ -14,6 +14,9 @@
     <!-- Select2 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
 
+    <!-- DataTables CSS -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+
     <style>
         body {
             font-family: 'Roboto', sans-serif;
@@ -62,6 +65,24 @@
             border: 1px solid #FFC300;
             color: #000;
         }
+        .table-responsive {
+            margin-top: 20px;
+        }
+        .table th, .table td {
+            white-space: nowrap;
+        }
+        .status-message {
+            margin-top: 20px;
+        }
+        .table {
+            width: 100% !important;
+            table-layout: fixed;
+        }
+        .table th, .table td {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
     </style>
 </head>
 <body>
@@ -108,7 +129,9 @@
                     required>
                     {% if available_skills %}
                         {% for skill in available_skills %}
-                            <option value="{{ skill }}">{{ skill }}</option>
+                            <option value="{{ skill }}" {% if last_settings.skill_groups and skill in last_settings.skill_groups %}selected{% endif %}>
+                                {{ skill }}
+                            </option>
                         {% endfor %}
                     {% endif %}
                 </select>
@@ -186,10 +209,17 @@
                 <div class="form-text">Если дельта не кратна 30, назначать остаток меньше 30 мин.</div>
             </div>
 
-            <!-- Кнопка запуска -->
-            <button id="submit-btn" class="btn btn-primary" type="submit">Запустить</button>
+            <!-- Кнопки -->
+            <div class="d-flex gap-2">
+                <button id="submit-btn" class="btn btn-primary" type="submit">Запустить</button>
+                <button type="reset" class="btn btn-secondary">Очистить</button>
+            </div>
         </form>
 
+        <!-- Статус обработки -->
+        <div id="status-message" class="alert alert-info mt-3" style="display: none;"></div>
+
+        <!-- Результаты -->
         {% if table %}
             <hr class="my-4">
             <h2 class="mt-4">Результаты</h2>
@@ -205,26 +235,28 @@
     <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
+    <!-- DataTables JS -->
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+
+    <!-- Russian language for DataTables -->
+    <script src="https://cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json"></script>
+
     <script>
     $(document).ready(function() {
-        // 1) Инициализация Select2
+        // Инициализация Select2
         $('#skill-groups-select').select2({
             placeholder: "Выберите скилл-группы",
             allowClear: true,
             width: '100%'
         });
 
-        // 2) При загрузке страницы сразу отобразим/скроем поля в зависимости от last_settings
+        // Условное отображение полей
         toggleStrategyFields();
-
-        // 3) Когда меняется стратегия выбора
-        $('#selection-strategy').on('change', function() {
-            toggleStrategyFields();
-        });
+        $('#selection-strategy').on('change', toggleStrategyFields);
 
         function toggleStrategyFields() {
             const strat = $('#selection-strategy').val();
-
             if (strat === 'by_delta') {
                 $('#mass-activity-group').hide();
                 $('#slots-group').show();
@@ -232,7 +264,6 @@
                 $('#slots-file').prop('required', true);
                 $('#min-interval').prop('required', true);
             } else {
-                // mass
                 $('#mass-activity-group').show();
                 $('#slots-group').hide();
                 $('#min-interval-group').hide();
@@ -241,45 +272,93 @@
             }
         }
 
-        // 4) При выборе файла активности — отправляем AJAX на /extract-skills
+        // AJAX: извлечение скилл-групп
         $('#activity-file').on('change', function() {
             if (this.files.length > 0) {
                 const formData = new FormData();
                 formData.append('activity', this.files[0]);
-
                 $('#loading-overlay').show();
-
-                fetch('/extract-skills', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.skills && data.skills.length > 0) {
-                        // Очищаем и заново заполняем Select2
-                        $('#skill-groups-select').empty();
-                        data.skills.forEach(skill => {
-                            const newOption = new Option(skill, skill, false, false);
-                            $('#skill-groups-select').append(newOption);
-                        });
-                        $('#skill-groups-select').trigger('change');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('Не удалось получить список скилл-групп.');
-                })
-                .finally(() => {
-                    $('#loading-overlay').hide();
-                });
+                fetch('/extract-skills', { method: 'POST', body: formData })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.skills && data.skills.length > 0) {
+                            $('#skill-groups-select').empty();
+                            data.skills.forEach(skill => {
+                                const newOption = new Option(skill, skill, false, false);
+                                $('#skill-groups-select').append(newOption);
+                            });
+                            $('#skill-groups-select').trigger('change');
+                        }
+                    })
+                    .catch(error => {
+                        alert('Не удалось получить список скилл-групп.');
+                    })
+                    .finally(() => {
+                        $('#loading-overlay').hide();
+                    });
             }
         });
 
-        // 5) При отправке формы показываем оверлей и дизейблим кнопку
-        $('#upload-form').on('submit', function() {
+        // Валидация формы
+        $('#upload-form').on('submit', function(e) {
+            const activityFile = $('#activity-file')[0].files[0];
+            const slotsFile = $('#slots-file')[0].files[0];
+            const skillGroups = $('#skill-groups-select').val();
+            const strat = $('#selection-strategy').val();
+
+            if (!activityFile) {
+                alert('Загрузите файл активности');
+                e.preventDefault();
+                $('#loading-overlay').hide();
+                return false;
+            }
+
+            if (strat === 'by_delta' && !slotsFile) {
+                alert('Загрузите файл слотов');
+                e.preventDefault();
+                $('#loading-overlay').hide();
+                return false;
+            }
+
+            if (!skillGroups || skillGroups.length === 0) {
+                alert('Выберите хотя бы одну скилл-группу');
+                e.preventDefault();
+                $('#loading-overlay').hide();
+                return false;
+            }
+
             $('#loading-overlay').show();
             $('#submit-btn').prop('disabled', true);
+            $('#status-message').show().text('Форма отправлена, идёт обработка данных...');
         });
+
+        // Инициализация DataTables
+        {% if table %}
+            $('.table').DataTable({
+                "responsive": true,
+                "lengthMenu": [[10, 20, 50, 100, 200, 500, 1000, -1], [10, 20, 50, 100, 200, 500, 1000, "Все"]],
+                "pageLength": 20,
+                "dom": "<'row'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                       "<'row'<'col-sm-12'tr>>" +
+                       "<'row'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+                "language": {
+                    "lengthMenu": "Показывать _MENU_ записей",
+                    "zeroRecords": "Ничего не найдено",
+                    "info": "Показаны записи с _START_ по _END_ из _TOTAL_",
+                    "infoEmpty": "Нет записей для отображения",
+                    "infoFiltered": "(отфильтровано из _MAX_ записей)",
+                    "paginate": {
+                        "first": "Первая",
+                        "last": "Последняя",
+                        "next": "Следующая",
+                        "previous": "Предыдущая"
+                    }
+                },
+                "order": [],
+                "searching": false,  // Убираем поиск
+                "pagingType": "simple_numbers"
+            });
+        {% endif %}
     });
     </script>
 </body>
