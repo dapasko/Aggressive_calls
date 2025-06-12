@@ -9,8 +9,21 @@ from config import TEMP_DIR
 
 def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Приводит DataFrame к безопасному виду для записи в Excel."""
+    # Сначала приводим строковые колонки к чистому string-type
+    for col in ('description', 'education_program'):
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .replace(0, '')    # убрать возможные цифровые 0
+                .fillna('')        # заменить NaN пустыми строками
+                .astype(str)       # явно строковый тип
+            )
+
+    # Обработка остальных колонок
     for col in df.columns:
-        # Приводим типы к безопасным
+        if col in ('description', 'education_program'):
+            continue
+
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = df[col].dt.strftime('%d.%m.%Y %H:%M:%S').fillna('')
         elif pd.api.types.is_numeric_dtype(df[col]):
@@ -18,7 +31,6 @@ def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[col] = df[col].astype(str).replace('nan', '').fillna('')
     return df
-
 
 def save_temp_file(df: pd.DataFrame) -> str:
     """Сохраняет DataFrame во временный файл и возвращает его ID."""
