@@ -325,8 +325,8 @@ def assign_calls(
     df_merged = pd.DataFrame(merged)
 
     # --- ФИНАЛЬНАЯ ОЧИСТКА ФОРМАТА ---
-    df_merged[COL_DATE_START] = pd.to_datetime(df_merged[COL_DATE_START]).dt.strftime('%Y-%m-%d')
-    df_merged[COL_DATE_END] = pd.to_datetime(df_merged[COL_DATE_END]).dt.strftime('%Y-%m-%d')
+    df_merged[COL_DATE_START] = pd.to_datetime(df_merged[COL_DATE_START]).dt.strftime('%d.%m.%Y')
+    df_merged[COL_DATE_END] = pd.to_datetime(df_merged[COL_DATE_END]).dt.strftime('%d.%m.%Y')
     df_merged['slot_start'] = df_merged['slot_start'].str.split('.').str[0]
     df_merged['slot_end'] = df_merged['slot_end'].str.split('.').str[0]
 
