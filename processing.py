@@ -92,8 +92,10 @@ def load_slots(file: FileStorage) -> pd.DataFrame:
     if missing:
         raise ValueError(f"В слотах отсутствуют: {missing}")
 
-    if not df[COL_TIME].astype(str).str.match(r'^\d{2}:\d{2}$').all():
-        raise ValueError("Время должно быть в формате HH:MM")
+    # Проверяем формат времени
+    time_format_regex = r'^\d{2}:\d{2}$|^\d{2}:\d{2}:\d{2}$|^\d{2} \d{2}$'
+    if not df[COL_TIME].astype(str).str.match(time_format_regex).all():
+          raise ValueError("Время должно быть в формате HH:MM, HH:MM:SS или HH MM")
 
     df = df.copy()
     df['Delta'] = df['Дельта'].astype(str).str.replace(',', '.').astype(float)
@@ -195,6 +197,15 @@ def assign_calls(
         if df_result.empty:
             logging.warning("Массовое назначение: не создано ни одной записи")
             return pd.DataFrame()
+
+        # --- Форматирование дат и времени ---
+        # Даты
+        df_result[COL_DATE_START] = pd.to_datetime(df_result[COL_DATE_START]).dt.strftime('%d.%m.%Y')
+        df_result[COL_DATE_END] = pd.to_datetime(df_result[COL_DATE_END]).dt.strftime('%d.%m.%Y')
+
+        # Время — указываем явно, что формат %H:%M:%S
+        df_result['slot_start'] = pd.to_datetime(df_result['slot_start'], format='%H:%M:%S').dt.strftime('%H:%M:%S')
+        df_result['slot_end'] = pd.to_datetime(df_result['slot_end'], format='%H:%M:%S').dt.strftime('%H:%M:%S')
 
         logging.info(f"Массовое назначение: создано {len(df_result)} записей")
         return df_result
